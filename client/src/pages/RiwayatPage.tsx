@@ -1,147 +1,114 @@
 import { trpc } from "@/lib/trpc";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Mail, DollarSign } from "lucide-react";
-
-function formatRupiah(amount: number) {
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    minimumFractionDigits: 0,
-  }).format(amount);
-}
 
 export default function RiwayatPage() {
-  const { data: deposits } = trpc.deposits.list.useQuery();
-  const { data: emails } = trpc.emails.list.useQuery();
+  const { data: deposits, isLoading: loadingDeposits } = trpc.deposits.list.useQuery();
+  const { data: emails,   isLoading: loadingEmails   } = trpc.emails.list.useQuery();
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      {/* Header */}
+    <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Riwayat</h1>
-        <p className="text-muted-foreground mt-2">
-          Lihat riwayat deposit dan email Anda
-        </p>
+        <h1 className="text-2xl font-bold">Riwayat</h1>
+        <p className="text-muted-foreground text-sm mt-1">Semua aktivitas akun kamu.</p>
       </div>
 
-      {/* Tabs */}
-      <Tabs defaultValue="deposits" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="deposits">Deposit</TabsTrigger>
+      <Tabs defaultValue="deposits">
+        <TabsList>
+          <TabsTrigger value="deposits">Riwayat Setor</TabsTrigger>
           <TabsTrigger value="emails">Email</TabsTrigger>
         </TabsList>
 
-        {/* Deposits Tab */}
-        <TabsContent value="deposits" className="space-y-4">
+        <TabsContent value="deposits" className="mt-4">
           <Card>
-            {deposits && deposits.length > 0 ? (
-              <div className="divide-y">
-                {deposits.map((deposit) => (
-                  <div
-                    key={deposit.id}
-                    className="p-4 flex items-center justify-between hover:bg-muted/50"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="p-2 bg-green-100 rounded-lg">
-                        <DollarSign size={20} className="text-green-600" />
-                      </div>
+            <CardHeader>
+              <CardTitle className="text-base">Riwayat Pengajuan Setor</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loadingDeposits ? (
+                <Loader />
+              ) : deposits && deposits.length > 0 ? (
+                <div className="divide-y">
+                  {[...deposits].reverse().map((d) => (
+                    <div key={d.id} className="flex items-center justify-between py-3">
                       <div>
-                        <p className="font-medium">{formatRupiah(deposit.amount)}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {new Date(deposit.createdAt).toLocaleDateString("id-ID", {
-                            year: "numeric",
-                            month: "long",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
+                        <p className="text-sm font-semibold">Rp {d.amount.toLocaleString("id-ID")}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(d.createdAt).toLocaleDateString("id-ID", {
+                            day: "numeric", month: "long", year: "numeric",
                           })}
                         </p>
+                        {d.approvedAt && (
+                          <p className="text-xs text-muted-foreground">
+                            Diproses: {new Date(d.approvedAt).toLocaleDateString("id-ID")}
+                          </p>
+                        )}
                       </div>
+                      <StatusBadge status={d.status} />
                     </div>
-                    <div className="text-right">
-                      <span
-                        className={`px-3 py-1 rounded-full text-sm font-medium ${
-                          deposit.status === "approved"
-                            ? "bg-green-100 text-green-700"
-                            : deposit.status === "pending"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : "bg-red-100 text-red-700"
-                        }`}
-                      >
-                        {deposit.status === "approved"
-                          ? "Disetujui"
-                          : deposit.status === "pending"
-                          ? "Menunggu"
-                          : "Ditolak"}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="p-8 text-center text-muted-foreground">
-                <DollarSign size={32} className="mx-auto mb-2 opacity-50" />
-                <p>Belum ada riwayat deposit</p>
-              </div>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <Empty text="Belum ada riwayat setor." />
+              )}
+            </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Emails Tab */}
-        <TabsContent value="emails" className="space-y-4">
+        <TabsContent value="emails" className="mt-4">
           <Card>
-            {emails && emails.length > 0 ? (
-              <div className="divide-y">
-                {emails.map((email) => (
-                  <div
-                    key={email.id}
-                    className="p-4 flex items-center justify-between hover:bg-muted/50"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="p-2 bg-blue-100 rounded-lg">
-                        <Mail size={20} className="text-blue-600" />
-                      </div>
+            <CardHeader>
+              <CardTitle className="text-base">Daftar Email</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loadingEmails ? (
+                <Loader />
+              ) : emails && emails.length > 0 ? (
+                <div className="divide-y">
+                  {[...emails].reverse().map((e) => (
+                    <div key={e.id} className="flex items-center justify-between py-3">
                       <div>
-                        <p className="font-medium font-mono text-sm">{email.email}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {email.provider.charAt(0).toUpperCase() + email.provider.slice(1)}
-                        </p>
+                        <p className="text-sm font-medium">{e.email}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{e.provider} • {new Date(e.createdAt).toLocaleDateString("id-ID")}</p>
                       </div>
+                      <StatusBadge status={e.status} />
                     </div>
-                    <div className="text-right">
-                      <span
-                        className={`px-3 py-1 rounded-full text-sm font-medium ${
-                          email.status === "verified"
-                            ? "bg-green-100 text-green-700"
-                            : email.status === "pending"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : email.status === "rejected"
-                            ? "bg-red-100 text-red-700"
-                            : "bg-gray-100 text-gray-700"
-                        }`}
-                      >
-                        {email.status === "verified"
-                          ? "Terverifikasi"
-                          : email.status === "pending"
-                          ? "Menunggu"
-                          : email.status === "rejected"
-                          ? "Ditolak"
-                          : "Kadaluarsa"}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="p-8 text-center text-muted-foreground">
-                <Mail size={32} className="mx-auto mb-2 opacity-50" />
-                <p>Belum ada email</p>
-              </div>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <Empty text="Belum ada email terdaftar." />
+              )}
+            </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
     </div>
   );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    pending:  "bg-yellow-100 text-yellow-700",
+    approved: "bg-green-100 text-green-700",
+    verified: "bg-green-100 text-green-700",
+    rejected: "bg-red-100 text-red-700",
+    expired:  "bg-gray-100 text-gray-600",
+  };
+  return (
+    <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium capitalize ${map[status] ?? "bg-muted"}`}>
+      {status}
+    </span>
+  );
+}
+
+function Loader() {
+  return (
+    <div className="space-y-3">
+      {[1,2,3].map(i => <div key={i} className="h-10 bg-muted animate-pulse rounded" />)}
+    </div>
+  );
+}
+
+function Empty({ text }: { text: string }) {
+  return <p className="text-sm text-muted-foreground text-center py-8">{text}</p>;
 }

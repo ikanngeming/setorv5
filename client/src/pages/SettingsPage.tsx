@@ -1,181 +1,138 @@
+import { useAuth } from "@/contexts/AuthContext";
 import { trpc } from "@/lib/trpc";
-import { Card } from "@/components/ui/card";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { toast } from "sonner";
-import { useState, useEffect } from "react";
-import { Loader2, User, LogOut } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { LogOut, User } from "lucide-react";
+import { useEffect } from "react";
+
+const schema = z.object({
+  name: z.string().min(2, "Nama minimal 2 karakter"),
+});
+type FormData = z.infer<typeof schema>;
 
 export default function SettingsPage() {
-  const { user, logout } = useAuth();
-  const [name, setName] = useState("");
+  const { user, logout, refresh } = useAuth();
+  const utils = trpc.useUtils();
 
-  const { data: settings } = trpc.settings.get.useQuery();
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      logout();
-      toast.success("Berhasil logout");
-    },
-  });
-
-  const updateProfileMutation = trpc.settings.updateProfile.useMutation({
+  const updateProfile = trpc.settings.updateProfile.useMutation({
     onSuccess: () => {
       toast.success("Profil berhasil diperbarui");
+      utils.auth.me.invalidate();
+      refresh();
     },
-    onError: (error) => {
-      toast.error(error.message || "Gagal memperbarui profil");
-    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<FormData>({
+    resolver: zodResolver(schema),
+    defaultValues: { name: user?.name ?? "" },
   });
 
   useEffect(() => {
-    if (settings?.name) {
-      setName(settings.name || "");
-    }
-  }, [settings]);
-
-  const handleUpdateProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!name || name.length < 2) {
-      toast.error("Nama minimal 2 karakter");
-      return;
-    }
-
-    updateProfileMutation.mutate({ name });
-  };
+    if (user?.name) reset({ name: user.name });
+  }, [user?.name, reset]);
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
-      {/* Header */}
+    <div className="max-w-xl mx-auto space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Pengaturan</h1>
-        <p className="text-muted-foreground mt-2">
-          Kelola profil dan preferensi Anda
-        </p>
+        <h1 className="text-2xl font-bold">Settings</h1>
+        <p className="text-muted-foreground text-sm mt-1">Kelola profil dan akun kamu.</p>
       </div>
 
-      {/* Profile Card */}
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold mb-6 flex items-center gap-2">
-          <User size={20} />
-          Profil Pengguna
-        </h2>
-
-        <form onSubmit={handleUpdateProfile} className="space-y-6">
-          {/* Name Field */}
-          <div className="space-y-2">
-            <Label htmlFor="name">Nama Lengkap</Label>
-            <Input
-              id="name"
-              type="text"
-              placeholder="Masukkan nama Anda"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={updateProfileMutation.isPending}
-            />
+      {/* Profile */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <User className="h-4 w-4" /> Profil
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Avatar className="h-14 w-14">
+              <AvatarFallback className="text-lg">
+                {user?.name?.charAt(0).toUpperCase() ?? "U"}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="font-semibold">{user?.name}</p>
+              <p className="text-sm text-muted-foreground">{user?.email}</p>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize mt-1 inline-block ${
+                user?.role === "admin" ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
+              }`}>
+                {user?.role}
+              </span>
+            </div>
           </div>
 
-          {/* Email Display */}
-          <div className="space-y-2">
-            <Label>Email</Label>
-            <Input
-              type="email"
-              value={settings?.email || user?.email || ""}
-              disabled
-              className="bg-muted"
-            />
-          </div>
+          <form onSubmit={handleSubmit((d) => updateProfile.mutate(d))} className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="name">Nama</Label>
+              <Input id="name" {...register("name")} />
+              {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
+            </div>
+            <Button type="submit" disabled={updateProfile.isPending} size="sm">
+              {updateProfile.isPending ? "Menyimpan..." : "Simpan Perubahan"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
 
-          {/* Role Display */}
-          <div className="space-y-2">
-            <Label>Role</Label>
-            <Input
-              type="text"
-              value={settings?.role === "admin" ? "Administrator" : "User"}
-              disabled
-              className="bg-muted"
-            />
-          </div>
+      {/* Account info */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Informasi Akun</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Row label="Email" value={user?.email ?? "-"} />
+          <Row label="Status" value={<StatusBadge status={user?.status ?? "active"} />} />
+          <Row label="Bergabung" value={user?.createdAt ? new Date(user.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }) : "-"} />
+        </CardContent>
+      </Card>
 
-          {/* Status Display */}
-          <div className="space-y-2">
-            <Label>Status Akun</Label>
-            <Input
-              type="text"
-              value={
-                settings?.status === "active"
-                  ? "Aktif"
-                  : settings?.status === "suspended"
-                  ? "Suspend"
-                  : "Banned"
-              }
-              disabled
-              className="bg-muted"
-            />
-          </div>
-
-          {/* Submit Button */}
+      {/* Logout */}
+      <Card className="border-destructive/30">
+        <CardContent className="pt-6">
           <Button
-            type="submit"
-            disabled={updateProfileMutation.isPending}
+            variant="destructive"
+            className="w-full"
+            onClick={() => {
+              logout().then(() => { window.location.href = "/"; });
+            }}
           >
-            {updateProfileMutation.isPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Menyimpan...
-              </>
-            ) : (
-              "Simpan Perubahan"
-            )}
+            <LogOut className="h-4 w-4 mr-2" />
+            Sign Out
           </Button>
-        </form>
-      </Card>
-
-      {/* Account Info Card */}
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold mb-4">Informasi Akun</h2>
-        <div className="space-y-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Bergabung sejak:</span>
-            <span className="font-medium">
-              {settings?.createdAt
-                ? new Date(settings.createdAt).toLocaleDateString("id-ID")
-                : "-"}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">ID Pengguna:</span>
-            <span className="font-medium">{settings?.id || "-"}</span>
-          </div>
-        </div>
-      </Card>
-
-      {/* Logout Card */}
-      <Card className="p-6 border-red-200 bg-red-50">
-        <h2 className="text-lg font-semibold mb-4 text-red-900">Keluar</h2>
-        <p className="text-sm text-red-800 mb-4">
-          Logout dari akun Anda. Anda akan perlu login kembali untuk mengakses aplikasi.
-        </p>
-        <Button
-          onClick={() => logoutMutation.mutate()}
-          disabled={logoutMutation.isPending}
-          variant="destructive"
-        >
-          {logoutMutation.isPending ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Logout...
-            </>
-          ) : (
-            <>
-              <LogOut className="mr-2 h-4 w-4" />
-              Logout
-            </>
-          )}
-        </Button>
+        </CardContent>
       </Card>
     </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between py-1.5 border-b last:border-0">
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <div className="text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    active:    "bg-green-100 text-green-700",
+    suspended: "bg-yellow-100 text-yellow-700",
+    banned:    "bg-red-100 text-red-700",
+  };
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${map[status] ?? ""}`}>
+      {status}
+    </span>
   );
 }

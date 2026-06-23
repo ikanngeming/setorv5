@@ -1,7 +1,2 @@
-/**
- * Unified type exports
- * Import shared types from this single entry point.
- */
-
-export type * from "../drizzle/schema";
-export * from "./_core/errors";
+// Shared types (re-export dari server/types untuk client)
+export type { User, UserRole, UserStatus } from "../server/types";

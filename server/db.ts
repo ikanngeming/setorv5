@@ -1,153 +1,326 @@
-import { and, count, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, emailAccounts, depositHistory, notifications, broadcasts } from "../drizzle/schema";
-import { ENV } from './_core/env';
+/**
+ * db.ts — JSONBin.io sebagai database JSON
+ *
+ * Semua operasi: GET (baca semua) → modifikasi in-memory → PUT (tulis semua).
+ *
+ * JSONBin endpoint:
+ *   GET  https://api.jsonbin.io/v3/b/{BIN_ID}/latest
+ *   PUT  https://api.jsonbin.io/v3/b/{BIN_ID}
+ */
 
-let _db: ReturnType<typeof drizzle> | null = null;
+import { ENV } from "./_core/env";
+import type { DbSchema, StoredUser, User, EmailAccount, Deposit, Notification, Broadcast } from "./types";
+import { EMPTY_DB } from "./types";
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
+const BASE = "https://api.jsonbin.io/v3/b";
+
+// ----------------------------------------------------------------
+// Low-level read / write
+// ----------------------------------------------------------------
+
+async function readBin(): Promise<DbSchema> {
+  if (!ENV.jsonbinApiKey || !ENV.jsonbinBinId) {
+    return structuredClone(EMPTY_DB);
   }
-  return _db;
+  const res = await fetch(`${BASE}/${ENV.jsonbinBinId}/latest`, {
+    headers: { "X-Master-Key": ENV.jsonbinApiKey, "X-Bin-Meta": "false" },
+  });
+  if (!res.ok) throw new Error(`[DB] read failed ${res.status}: ${await res.text()}`);
+  return mergeWithEmpty(await res.json() as Partial<DbSchema>);
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
+async function writeBin(data: DbSchema): Promise<void> {
+  if (!ENV.jsonbinApiKey || !ENV.jsonbinBinId) return;
+  const res = await fetch(`${BASE}/${ENV.jsonbinBinId}`, {
+    method:  "PUT",
+    headers: { "Content-Type": "application/json", "X-Master-Key": ENV.jsonbinApiKey },
+    body:    JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`[DB] write failed ${res.status}: ${await res.text()}`);
+}
 
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
+function mergeWithEmpty(data: Partial<DbSchema>): DbSchema {
+  return {
+    users:         data.users         ?? [],
+    emailAccounts: data.emailAccounts ?? [],
+    deposits:      data.deposits      ?? [],
+    notifications: data.notifications ?? [],
+    broadcasts:    data.broadcasts    ?? [],
+    _meta: {
+      lastId: {
+        users:         data._meta?.lastId?.users         ?? 0,
+        emailAccounts: data._meta?.lastId?.emailAccounts ?? 0,
+        deposits:      data._meta?.lastId?.deposits      ?? 0,
+        notifications: data._meta?.lastId?.notifications ?? 0,
+        broadcasts:    data._meta?.lastId?.broadcasts    ?? 0,
+      },
+    },
+  };
+}
 
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
+/** Baca → ubah → tulis, return result */
+async function tx<T>(fn: (db: DbSchema) => { db: DbSchema; result: T }): Promise<T> {
+  const db = await readBin();
+  const { db: updated, result } = fn(db);
+  await writeBin(updated);
+  return result;
+}
 
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
+function nextId(db: DbSchema, t: keyof DbSchema["_meta"]["lastId"]): number {
+  return ++db._meta.lastId[t];
+}
 
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
+function now(): string { return new Date().toISOString(); }
 
-    textFields.forEach(assignNullable);
+function toISO(d: Date | string | undefined | null): string {
+  if (!d) return now();
+  return d instanceof Date ? d.toISOString() : d;
+}
 
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
+/** Konversi StoredUser → User (untuk SDK compatibility) */
+function storedToUser(s: StoredUser): User {
+  return {
+    ...s,
+    createdAt:    new Date(s.createdAt),
+    updatedAt:    new Date(s.updatedAt),
+    lastSignedIn: new Date(s.lastSignedIn),
+  };
+}
+
+// ----------------------------------------------------------------
+// Users
+// ----------------------------------------------------------------
+
+export async function getUserByOpenId(openId: string): Promise<User | null> {
+  const db = await readBin();
+  const found = db.users.find((u) => u.openId === openId);
+  return found ? storedToUser(found) : null;
+}
+
+export async function getUserById(id: number): Promise<User | null> {
+  const db = await readBin();
+  const found = db.users.find((u) => u.id === id);
+  return found ? storedToUser(found) : null;
+}
+
+export async function getAllUsers(): Promise<User[]> {
+  const db = await readBin();
+  return db.users.map(storedToUser);
+}
+
+export async function upsertUser(
+  input: Pick<User, "openId"> & Partial<Omit<User, "id" | "openId">>
+): Promise<void> {
+  await tx((db) => {
+    const idx = db.users.findIndex((u) => u.openId === input.openId);
+    const t   = now();
+
+    if (idx >= 0) {
+      db.users[idx] = {
+        ...db.users[idx],
+        name:         input.name         ?? db.users[idx].name,
+        email:        input.email        ?? db.users[idx].email,
+        loginMethod:  input.loginMethod  ?? db.users[idx].loginMethod,
+        lastSignedIn: toISO(input.lastSignedIn as Date | string) ?? db.users[idx].lastSignedIn,
+        updatedAt:    t,
+      };
+    } else {
+      const isFirst = db.users.length === 0;
+      db.users.push({
+        id:           nextId(db, "users"),
+        openId:       input.openId,
+        name:         input.name         ?? null,
+        email:        input.email        ?? null,
+        loginMethod:  input.loginMethod  ?? null,
+        role:         isFirst ? "admin" : "user",
+        status:       "active",
+        balance:      0,
+        createdAt:    t,
+        updatedAt:    t,
+        lastSignedIn: toISO(input.lastSignedIn as Date | string),
+      });
     }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
+    return { db, result: undefined };
+  });
+}
 
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
+export async function updateUser(
+  userId: number,
+  data: Partial<Pick<StoredUser, "name" | "role" | "status" | "balance">>
+): Promise<void> {
+  await tx((db) => {
+    const idx = db.users.findIndex((u) => u.id === userId);
+    if (idx >= 0) Object.assign(db.users[idx], { ...data, updatedAt: now() });
+    return { db, result: undefined };
+  });
+}
 
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
+export async function updateUserBalance(userId: number, delta: number): Promise<void> {
+  await tx((db) => {
+    const idx = db.users.findIndex((u) => u.id === userId);
+    if (idx >= 0) { db.users[idx].balance += delta; db.users[idx].updatedAt = now(); }
+    return { db, result: undefined };
+  });
+}
 
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
+// ----------------------------------------------------------------
+// Email Accounts
+// ----------------------------------------------------------------
+
+export async function getEmailsByUserId(userId: number): Promise<EmailAccount[]> {
+  const db = await readBin();
+  return db.emailAccounts.filter((e) => e.userId === userId);
+}
+
+export async function getEmailById(id: number): Promise<EmailAccount | null> {
+  const db = await readBin();
+  return db.emailAccounts.find((e) => e.id === id) ?? null;
+}
+
+export async function getEmailByAddress(email: string): Promise<EmailAccount | null> {
+  const db = await readBin();
+  return db.emailAccounts.find((e) => e.email === email) ?? null;
+}
+
+export async function createEmail(
+  input: Omit<EmailAccount, "id" | "createdAt" | "updatedAt">
+): Promise<number> {
+  return tx((db) => {
+    const id = nextId(db, "emailAccounts");
+    const t  = now();
+    db.emailAccounts.push({ ...input, id, createdAt: t, updatedAt: t });
+    return { db, result: id };
+  });
+}
+
+export async function updateEmailStatus(id: number, status: EmailAccount["status"]): Promise<void> {
+  await tx((db) => {
+    const idx = db.emailAccounts.findIndex((e) => e.id === id);
+    if (idx >= 0) { db.emailAccounts[idx].status = status; db.emailAccounts[idx].updatedAt = now(); }
+    return { db, result: undefined };
+  });
+}
+
+// ----------------------------------------------------------------
+// Deposits
+// ----------------------------------------------------------------
+
+export async function getDepositsByUserId(userId: number): Promise<Deposit[]> {
+  const db = await readBin();
+  return db.deposits.filter((d) => d.userId === userId);
+}
+
+export async function getPendingDeposits(): Promise<Deposit[]> {
+  const db = await readBin();
+  return db.deposits.filter((d) => d.status === "pending");
+}
+
+export async function getDepositById(id: number): Promise<Deposit | null> {
+  const db = await readBin();
+  return db.deposits.find((d) => d.id === id) ?? null;
+}
+
+export async function createDeposit(input: Pick<Deposit, "userId" | "amount">): Promise<number> {
+  return tx((db) => {
+    const id = nextId(db, "deposits");
+    const t  = now();
+    db.deposits.push({
+      id, ...input, status: "pending",
+      approvedBy: null, approvedAt: null, rejectionReason: null,
+      createdAt: t, updatedAt: t,
     });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+    return { db, result: id };
+  });
 }
 
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+export async function updateDeposit(
+  id: number,
+  data: Partial<Pick<Deposit, "status" | "approvedBy" | "approvedAt" | "rejectionReason">>
+): Promise<void> {
+  await tx((db) => {
+    const idx = db.deposits.findIndex((d) => d.id === id);
+    if (idx >= 0) Object.assign(db.deposits[idx], { ...data, updatedAt: now() });
+    return { db, result: undefined };
+  });
 }
 
+// ----------------------------------------------------------------
+// Notifications
+// ----------------------------------------------------------------
 
-export async function getUserById(id: number) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+export async function getNotificationsByUserId(userId: number): Promise<Notification[]> {
+  const db = await readBin();
+  return db.notifications.filter((n) => n.userId === userId);
 }
 
-export async function getEmailAccountsByUserId(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(emailAccounts).where(eq(emailAccounts.userId, userId));
+export async function getNotificationById(id: number): Promise<Notification | null> {
+  const db = await readBin();
+  return db.notifications.find((n) => n.id === id) ?? null;
 }
 
-export async function getDepositHistoryByUserId(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(depositHistory).where(eq(depositHistory.userId, userId));
+export async function createNotification(
+  input: Omit<Notification, "id" | "createdAt">
+): Promise<number> {
+  return tx((db) => {
+    const id = nextId(db, "notifications");
+    db.notifications.push({ ...input, id, createdAt: now() });
+    return { db, result: id };
+  });
 }
 
-export async function getNotificationsByUserId(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(notifications).where(eq(notifications.userId, userId));
+export async function createNotificationsBulk(
+  inputs: Omit<Notification, "id" | "createdAt">[]
+): Promise<void> {
+  if (!inputs.length) return;
+  await tx((db) => {
+    const t = now();
+    for (const input of inputs) {
+      db.notifications.push({ ...input, id: nextId(db, "notifications"), createdAt: t });
+    }
+    return { db, result: undefined };
+  });
 }
 
-export async function getUnreadNotificationsCount(userId: number) {
-  const db = await getDb();
-  if (!db) return 0;
-  const result = await db
-    .select({ count: count() })
-    .from(notifications)
-    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, 0)));
-  return result[0]?.count || 0;
+export async function markNotificationRead(id: number): Promise<void> {
+  await tx((db) => {
+    const idx = db.notifications.findIndex((n) => n.id === id);
+    if (idx >= 0) { db.notifications[idx].isRead = true; db.notifications[idx].readAt = now(); }
+    return { db, result: undefined };
+  });
 }
 
-export async function markNotificationAsRead(notificationId: number) {
-  const db = await getDb();
-  if (!db) return false;
-  try {
-    await db
-      .update(notifications)
-      .set({ isRead: 1, readAt: new Date() })
-      .where(eq(notifications.id, notificationId));
-    return true;
-  } catch (error) {
-    console.error("[Database] Failed to mark notification as read:", error);
-    return false;
-  }
+// ----------------------------------------------------------------
+// Broadcasts
+// ----------------------------------------------------------------
+
+export async function createBroadcast(
+  input: Omit<Broadcast, "id" | "createdAt" | "updatedAt">
+): Promise<number> {
+  return tx((db) => {
+    const id = nextId(db, "broadcasts");
+    const t  = now();
+    db.broadcasts.push({ ...input, id, createdAt: t, updatedAt: t });
+    return { db, result: id };
+  });
 }
 
-export async function getPendingDeposits() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(depositHistory).where(eq(depositHistory.status, "pending"));
+export async function getBroadcastById(id: number): Promise<Broadcast | null> {
+  const db = await readBin();
+  return db.broadcasts.find((b) => b.id === id) ?? null;
 }
 
-export async function getPublishedBroadcasts() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(broadcasts).where(eq(broadcasts.status, "published"));
+export async function getPublishedBroadcasts(): Promise<Broadcast[]> {
+  const db = await readBin();
+  return db.broadcasts.filter((b) => b.status === "published");
+}
+
+export async function updateBroadcast(
+  id: number,
+  data: Partial<Pick<Broadcast, "status" | "publishedAt">>
+): Promise<void> {
+  await tx((db) => {
+    const idx = db.broadcasts.findIndex((b) => b.id === id);
+    if (idx >= 0) Object.assign(db.broadcasts[idx], { ...data, updatedAt: now() });
+    return { db, result: undefined };
+  });
 }

@@ -1,12 +1,11 @@
 {
   "version": 2,
-  "buildCommand": "pnpm build:vercel",
+  "buildCommand": "pnpm build",
   "outputDirectory": "dist/public",
   "rewrites": [
-    { "source": "/api/trpc/:path*", "destination": "/api/trpc" },
-    { "source": "/api/oauth/:path*", "destination": "/api/oauth" },
-    { "source": "/api/csrf-token", "destination": "/api/csrf" },
-    { "source": "/manus-storage/:path*", "destination": "/api/storage" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/api/oauth/callback", "destination": "/api/oauth" },
+    { "source": "/api/trpc/:path*",     "destination": "/api/trpc" },
+    { "source": "/api/csrf-token",      "destination": "/api/csrf" },
+    { "source": "/((?!api/).*)",        "destination": "/index.html" }
   ]
 }

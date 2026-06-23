@@ -1,13 +1,17 @@
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { createContext, useCallback, useContext, useRef, type ReactNode } from "react";
-import type { User } from "../../../../drizzle/schema";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  type ReactNode,
+} from "react";
+import type { User } from "../../../../server/types";
 
 type AuthContextValue = {
   user: User | null;
   loading: boolean;
   isAuthenticated: boolean;
-  error: unknown;
   refresh: () => void;
   logout: () => Promise<void>;
 };
@@ -20,6 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const meQuery = trpc.auth.me.useQuery(undefined, {
     retry: false,
     refetchOnWindowFocus: false,
+    // Cache 5 menit — tidak re-query setiap render/mount
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
   });
@@ -27,40 +32,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => {
       utils.auth.me.setData(undefined, null);
+      utils.invalidate();
     },
   });
 
   const logout = useCallback(async () => {
     try {
       await logoutMutation.mutateAsync();
-    } catch (error: unknown) {
+    } catch (error) {
       if (
         error instanceof TRPCClientError &&
         error.data?.code === "UNAUTHORIZED"
       ) {
         return;
       }
-      throw error;
     } finally {
       utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
     }
   }, [logoutMutation, utils]);
 
-  const value: AuthContextValue = {
-    user: meQuery.data ?? null,
-    loading: meQuery.isLoading || logoutMutation.isPending,
-    isAuthenticated: Boolean(meQuery.data),
-    error: meQuery.error ?? logoutMutation.error ?? null,
-    refresh: () => meQuery.refetch(),
-    logout,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{
+        user: meQuery.data ?? null,
+        loading: meQuery.isLoading || logoutMutation.isPending,
+        isAuthenticated: Boolean(meQuery.data),
+        refresh: () => meQuery.refetch(),
+        logout,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
+  if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
   return ctx;
 }

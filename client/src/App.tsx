@@ -1,47 +1,43 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
-import DashboardLayout from "@/components/DashboardLayout";
-import { DashboardLayoutSkeleton } from "@/components/DashboardLayoutSkeleton";
+import { getLoginUrl } from "@/const";
 import { Route, Switch } from "wouter";
-import ErrorBoundary from "./components/ErrorBoundary";
-import { ThemeProvider } from "./contexts/ThemeContext";
-import NotFound from "./pages/NotFound";
+import { useEffect, useRef } from "react";
+import Layout from "./components/Layout";
+import Skeleton from "./components/Skeleton";
 import Dashboard from "./pages/Dashboard";
 import GeneratePage from "./pages/GeneratePage";
 import SetorPage from "./pages/SetorPage";
 import RiwayatPage from "./pages/RiwayatPage";
 import SettingsPage from "./pages/SettingsPage";
 import AdminPage from "./pages/AdminPage";
-import { useEffect, useRef } from "react";
-import { getLoginUrl } from "./const";
+import NotFound from "./pages/NotFound";
 
 function Router() {
   const { user, loading } = useAuth();
-  const hasRedirected = useRef(false);
+  // Ref mencegah redirect loop — hanya redirect satu kali
+  const redirected = useRef(false);
 
   useEffect(() => {
     if (loading) return;
     if (user) {
-      hasRedirected.current = false;
+      redirected.current = false;
       return;
     }
-    if (hasRedirected.current) return;
+    if (redirected.current) return;
 
-    const loginUrl = getLoginUrl();
-    if (!loginUrl || loginUrl === "/") return;
-    if (window.location.href === loginUrl) return;
+    const url = getLoginUrl();
+    if (!url || url === "/" || window.location.href === url) return;
 
-    hasRedirected.current = true;
-    window.location.href = loginUrl;
+    redirected.current = true;
+    window.location.href = url;
   }, [loading, user]);
 
-  if (loading || !user) {
-    return <DashboardLayoutSkeleton />;
-  }
+  if (loading || !user) return <Skeleton />;
 
   return (
-    <DashboardLayout>
+    <Layout>
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/dashboard" component={Dashboard} />
@@ -57,21 +53,17 @@ function Router() {
         />
         <Route component={NotFound} />
       </Switch>
-    </DashboardLayout>
+    </Layout>
   );
 }
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <ThemeProvider defaultTheme="light">
-        <TooltipProvider>
-          <Toaster />
-          <AuthProvider>
-            <Router />
-          </AuthProvider>
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
+    <TooltipProvider>
+      <Toaster richColors position="top-right" />
+      <AuthProvider>
+        <Router />
+      </AuthProvider>
+    </TooltipProvider>
   );
 }
