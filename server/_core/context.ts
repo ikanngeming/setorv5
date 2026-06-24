@@ -15,7 +15,22 @@ export async function createContext(
   try {
     user = await sdk.authenticateRequest(opts.req);
   } catch {
-    user = null;
+    if (process.env.NODE_ENV === "development") {
+      user = {
+        id: 1,
+        openId: "dev-user",
+        name: "Developer",
+        email: "dev@example.com",
+        role: "admin",
+        status: "active",
+        balance: 1000000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSignedIn: new Date(),
+      };
+    } else {
+      user = null;
+    }
   }
   return { req: opts.req, res: opts.res, user };
 }

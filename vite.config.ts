@@ -20,6 +20,6 @@ export default defineConfig({
     proxy: {
       "/api": "http://localhost:3000",
     },
-    allowedHosts: [".vercel.app", "localhost", "127.0.0.1"],
+    allowedHosts: true,
   },
 });
